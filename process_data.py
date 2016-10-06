@@ -3,110 +3,76 @@ import numpy as np
 #determine whether a shot recorded in the play by play is a corner 3
 
 def IsItACorner3(pbp_event, Shot_summary):
-      
-    #Parse play by play string to grab important info
-    split_event=pbp_event.split(" ")
-    Game_id=np.int64(split_event[2])   
-    pbp_seconds=split_event[9]
-    pbp_seconds=(int(pbp_seconds)/10)
-    pbp_period=np.int64(split_event[4])
-    
-    #create upper and lower bound for time comparison    
-    upper=pbp_seconds+2
-    lower=pbp_seconds-2
-    
-    #Create Conditions to filyter through shot summary
-    games = Shot_summary['GAME_ID']==Game_id 
-    periods = Shot_summary["PERIOD"]==pbp_period 
-    lowers = Shot_summary["GAME_CLOCK"]>lower
-    uppers = Shot_summary["GAME_CLOCK"] < upper
-    lower_dist=Shot_summary["SHOT_DIST"]>22
-    upper_dist=Shot_summary["SHOT_DIST"]<24.5
-    #pt_value=Shot_summary["PT_VALUE"]==3
-    
-   #determine if a corner 3 can be linked to the play by play shot
-    corner_three= Shot_summary[games & periods & lowers & uppers & lower_dist \
-    &  upper_dist] #& pt_value]
 
-     
-    #If there is a corner 3 linked, return True, else False
-    if (len(corner_three.index)>0):
-    	#print(pbp_event[0] + " " + )
-        return True
-    else:
-        return False
+	#Parse play by play string to grab important info
+	Game_id=np.int64(pbp_event['Game_id'])
 
+	pbp_seconds=pbp_event['PC_Time']
+	pbp_seconds=(int(pbp_seconds)/10)
+	pbp_period=np.int64(pbp_event['Period'])
+	#create upper and lower bound for time comparison
+	upper = pbp_seconds+2
+	lower = pbp_seconds-2
 
+	#Create Conditions to filter through shot summary
+	games = Shot_summary['GAME_ID'] == Game_id
+	periods = Shot_summary['PERIOD'] == pbp_period
+	lowers = Shot_summary['GAME_CLOCK'] > lower
+	uppers = Shot_summary['GAME_CLOCK'] < upper
 
+	#determine if a corner 3 can be linked to the play by play shot
+	corner_three = Shot_summary[games & periods & lowers & uppers]
+	#If there is a corner 3 linked, return True
+	return (not corner_three.empty)
 
-def readForward(fileReader, event):
-	"""	
-	return an array of strings that represent the next 7 seconds of play information
-	it will also seek backward the total number of bytes it has read forward, so that the original iterator can
-	continue.
-
-	fileReader : reference to file
-	event: string that triggered the readForward call
-
-	output:
-	all the recorded events into an array
-	"""	
-
-	result = []
-	start = getTime(event);
-	line = fileReader.readline();
-	numBytes = len(line);
-
-	while(line != "" and start - getTime(line) < 70 and start - getTime(line) > 0): #while current line is within 7 seconds
-		line = fileReader.readline();
-		numBytes += len(line);
-		line = line.replace("\n", "");
-		result.append(line);
-
-	numBytes = numBytes * -1;
-	fileReader.seek(numBytes, 1);
-
-	return result;
-
-def getTime(PbpRow):
-	#return 7200 indexed time from the play by play file.
-	return int(PbpRow.split(" ")[9]);
-
-def isBreakAway(plays, shot):
-	'''
-	This function checks if a fast break has happened given the shot data and 
+def isFastbreak(pbp_file, event, index):
+	"""
+	This function checks if a fast break has happened given the shot data and
 	the plays happening immediatedly after it. Checks every consecutive event
-	if a shot or foul lead to free throws has happened until a change of 
+	if a shot or foul lead to free throws has happened until a change of
 	possesion or end of the set of events
-	
+
 	Input:
 	plays -> list of strings of the play by play data
-	shot -> string of the play by play data of the shot
-	
+	line  -> row of the play by play data of the shot
+
 	Output:
-	boolean   
-	'''
-	shootingTeam = shot[shot.find("[")+1:shot.find("]")]
-	for event in plays:
-		if shootingTeam in event:
-			if ("Foul" not in event):
-				break
+	boolean
+	"""
+
+	startTime = event["PC_Time"]
+	period = event["Period"]
+	gameId = event['Game_id']
+	description = str(event["Description"])
+	shootingTeam = description[description.find("[")+1:description.find("]")]
+
+	nextLine = pbp_file.iloc[index+1]
+
+	while((startTime - nextLine["PC_Time"] < 70) and (startTime - nextLine["PC_Time"] > 0) and \
+	(period == nextLine["Period"]) and (gameId == nextLine['Game_id'])):
+		if shootingTeam in nextLine["Description"]:
+			if ("Foul" not in nextLine["Description"]):
+				return False
 		else:
-			if ("Shot" in event) or ("Free Throw" in event):
+			if ("Shot" in nextLine["Description"]) or ("Free Throw" in nextLine["Description"]):
 				return True
+		try:
+			nextLine = pbp_file.iloc[index+1]
+		except IndexError:
+			break
 	return False
 
 def IsMissedShot(line):
 	'''
 	Checks if a shot attempt has missed
-	
+
 	Input:
 	line -> string of the play by play date of the shot
-	
+
 	Output:
 	boolean
 	'''
-	return ("Missed Shot" in line)
+	return ("Missed" in str(line["Description"]))
 
 def IsThree(line):
 	"""
@@ -114,11 +80,11 @@ def IsThree(line):
 
 	Input:
 	line -> string of the play by play date of the shot
-	
+
 	Output:
 	boolean
 	"""
-	return ("Shot" in line) and ("3pt" in line)
+	return ("3pt Shot" in str(line["Description"]))
 
 def IsTwo(line):
 	'''
@@ -126,134 +92,76 @@ def IsTwo(line):
 
 	Input:
 	line -> string of the play by play date of the shot
-	
+
 	Output:
 	boolean
 	'''
+	return (("Shot" in str(line["Description"])) and ("3pt" not in str(line["Description"])))
 
-	return (("Shot" in line) and ("3pt" not in line))
-
-def main():
+def main(year):
+	shot_file = None
+	pbp_file = None
+	if year == 2014:
+		shot_file = "Hackathon_sv_shot_summary_2014-15.csv"
+		pbp_file = "Hackathon_play_by_play_2014-15.csv"
+	elif year == 2015:
+		shot_file = "Hackathon_sv_shot_summary_2015-16.csv"
+		pbp_file = "Hackathon_play_by_play_2015-16.csv"
+	else:
+		print("Invalid year! Try 2014 or 2015.")
+		return;
 	#count of how many fastbreaks occur from corner threes and twos
-	Shot_summary=pd.read_csv("Hackathon_sv_shot_summary_2014-15.csv")
+	Shot_summary=pd.read_csv(shot_file)
 	IsAThree= Shot_summary["PT_VALUE"] == 3
-	Shot_summary = Shot_summary[IsAThree]
+	lower_dist=Shot_summary['SHOT_DIST'] > 22
+	upper_dist=Shot_summary['SHOT_DIST'] < 24.5
+	Shot_summary = Shot_summary[IsAThree & lower_dist & upper_dist]
 
-	TotalLines = 0;
-	MissedCornerThrees = 0;
-	MissedTwos = 0;
-	CornerThreeFastBreakCount = 0;
-	TwosFastBreakCount = 0;
+	TotalMissedShots = 0;
+	TotalMissedTwos = 0;
+	TotalMissedThrees = 0;
+	TotalMissedCornerThrees = 0;
+	MissedTwosFastBreak = 0;
+	MissedThreeFastBreak = 0;
+	MissedCornerThreeFastBreak = 0;
 
-	#output file with events that were relevant to the counts.
+	pbp = pd.read_csv(pbp_file);
+	for index, row in pbp.iterrows():
+		if(IsMissedShot(row)):
+			TotalMissedShots += 1
+			fastBreak = isFastbreak(pbp, row, index);
+			if(IsTwo(row)):
+				TotalMissedTwos += 1
+				MissedTwosFastBreak += fastBreak
+			if(IsThree(row)):
+				TotalMissedThrees += 1
+				MissedThreeFastBreak += fastBreak
+			if(IsItACorner3(row, Shot_summary)):
+				TotalMissedCornerThrees += 1
+				MissedCornerThreeFastBreak += fastBreak
 
-	#2014 values
-	CornerThreeFile2014 = open("cornerThree14.txt",'w+')
-	ThreeFile2014 = open("Three14.txt", "w+")
-	TwosFile2014 = open("otherShots1415.txt", 'w+')
+	print("Missed shots in " + str(year) + ": " + str(TotalMissedShots))
+	print("Missed two pointers in "  + str(year) + ": " + str(TotalMissedTwos))
+	print("Missed three pointers in " + str(year) + ": " + str(TotalMissedThrees))
+	print("Missed corner threes in " + str(year) + ": " + str(TotalMissedCornerThrees))
+	print("Fast Breaks from Missed Twos in " + str(year) + ": " + str(MissedTwosFastBreak))
+	print("Fast Breaks from Missed Threes in " + str(year) +": " + str(MissedThreeFastBreak))
+	print("Fast Breaks from Missed Corner Threes in " + str(year) +": " + str(MissedCornerThreeFastBreak))
 
-	TotalMissedShots2014 = 0;
-	TotalMissedTwos2014 = 0;
-	TotalMissedThrees2014 = 0;
-	TotalMissedCornerThrees2014 = 0;
-	MissedTwosFastBreak2014 = 0;
-	MissedThreeFastBreak2014 = 0;
-	MissedCornerThreeFastBreak2014 = 0;
+	Output = open("output_" + str(year) + ".txt", "w+");
+	#Print out the data
+	Output.write("Missed shots in " + str(year) + ": " + str(TotalMissedShots))
+	Output.write("Missed two pointers in "  + str(year) + ": " + str(TotalMissedTwos))
+	Output.write("Missed three pointers in " + str(year) + ": " + str(TotalMissedThrees))
+	Output.write("Missed corner threes in " + str(year) + ": " + str(TotalMissedCornerThrees))
+	Output.write("Fast Breaks from Missed Twos in " + str(year) + ": " + str(MissedTwosFastBreak))
+	Output.write("Fast Breaks from Missed Threes in " + str(year) +": " + str(MissedThreeFastBreak))
+	Output.write("Fast Breaks from Missed Corner Threes in " + str(year) +": " + str(MissedCornerThreeFastBreak))
 
-
-	#2015 values
-	CornerThreeFile2015 = open("cornerThree15.txt","w+")
-	ThreeFile2015 = open("Three15.txt", "w+")
-	TwosFile2015 = open("otherShots1415.txt", 'w+')
-	TotalMissedShots2015 = 0;
-	TotalMissedTwos2015 = 0;
-	TotalMissedThrees2015 = 0;
-	TotalMissedCornerThrees2015 = 0;
-	MissedTwoFastBreak2015 = 0;
-	MissedThreeFastBreak2015 = 0;
-	MissedCornerThreeFastBreak2015 = 0;
-
-
-	file = open("Hackathon_play_by_play2014on.txt", 'r')
-	line = file.readline();
-	while(line):
-		line = file.readline();
-		if(line.split(" ")[2][1:3] == '14'):		
-			if(IsMissedShot(line)):
-				TotalMissedShots2014 += 1;
-				nextSevenSeconds = readForward(file, line);
-				if(IsTwo(line)):
-					#it's not a corner 3, add it to the other file
-					TotalMissedTwos2014 += 1;
-					MissedTwosFastBreak2014 += isBreakAway(nextSevenSeconds, line);
-					TwosFile2014.write("|".join(nextSevenSeconds) + "\n")
-
-				if(IsThree(line)):
-					TotalMissedThrees2014 += 1;
-					MissedThreeFastBreak2014 += isBreakAway(nextSevenSeconds, line);
-					ThreeFile2014.write("|".join(nextSevenSeconds) + "\n")
-
-				if(IsItACorner3(line, Shot_summary)):
-					TotalMissedCornerThrees2014 += 1;
-					MissedCornerThreeFastBreak2014+= isBreakAway(nextSevenSeconds, line);
-					CornerThreeFile2014.write("|".join(nextSevenSeconds) + "\n")
-		else:
-			if(IsMissedShot(line)):
-				TotalMissedShots2015 += 1;
-				nextSevenSeconds = readForward(file, line);
-				if(IsTwo(line)):
-					#it's not a corner 3, add it to the other file
-					TotalMissedTwos2015 += 1;
-					MissedTwosFastBreak2015 += isBreakAway(nextSevenSeconds, line);
-					TwosFile2015.write("|".join(nextSevenSeconds) + "\n")
-
-				if(IsThree(line)):
-					TotalMissedThrees2015 += 1;
-					MissedThreeFastBreak2015 += isBreakAway(nextSevenSeconds, line);
-					ThreeFile2015.write("|".join(nextSevenSeconds) + "\n")
-
-				if(IsItACorner3(line, Shot_summary)):
-					TotalMissedCornerThrees2015 += 1;
-					MissedCornerThreeFastBreak2015+= isBreakAway(nextSevenSeconds, line);
-					CornerThreeFile2015.write("|".join(nextSevenSeconds) + "\n")
-
-	Output = open("output_2014.txt", "w+");
-	#Print out the data for 2014
-	Output.write("Missed shots in 2014: " + TotalMissedShots2014)
-	Output.write("Missed two pointers in 2014: " + TotalMissedTwos2014)
-	Output.write("Missed three pointers in 2014: " + TotalMissedThrees2014)
-	Output.write("Missed corner threes in 2014: " + TotalMissedCornerThrees2014)
-	Output.write("Fast Breaks from Missed Twos in 2014: " + MissedTwosFastBreak2014)
-	Output.write("Fast Breaks from Missed Threes in 2014: " + MissedThreeFastBreak2014)
-	Output.write("Fast Breaks from Missed Corner Threes in 2014: " + MissedCornerThreeFastBreak2014)
-
-	Output.write("\n");
-
-	Output = open("output_2015.txt", "w+");
-	#print out the data for 2015
-	Output.write("Missed shots in 2015: " + TotalMissedShots2015)
-	Output.write("Missed two pointers in 2015: " + TotalMissedTwos2015)
-	Output.write("Missed three pointers in 2015: " + TotalMissedThrees2015)
-	Output.write("Missed corner threes in 2015: " + TotalMissedCornerThrees2015)
-	Output.write("Fast Breaks from Missed Twos in 2015: " + MissedTwosFastBreak2015)
-	Output.write("Fast Breaks from Missed Threes in 2015: " + MissedThreeFastBreak2015)
-	Output.write("Fast Breaks from Missed Corner Threes in 2015: " + MissedCornerThreeFastBreak2015)
-
-	Output.close();
-
-
-	CornerThreeFile2014.close()
-	ThreeFile2014.close()
-	TwosFile2014.close()
-	CornerThreeFile2015.close()
-	ThreeFile2015.close()
-	TwosFile2015.close()
-
-	CornerThreeFile.close();
-	TwosFile.close()
-	file.close();
+	Output.close()
 
 	print("done, check files");
 
-If __name__ == '__main__':
-	main();
+if __name__ == '__main__':
+	main(2014)
+	main(2015)
